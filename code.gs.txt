@@ -1,0 +1,1078 @@
+/**
+ * ==========================================
+ * SISPARDI - SISTEM INFORMASI ARSIP DINAMIS
+ * Backend Logic (Google Apps Script)
+ * ==========================================
+ */
+
+// --- KONFIGURASI ---
+// ID Spreadsheet Anda (Jangan diubah jika masih menggunakan file yang sama)
+const SHEET_ID = "1xebZRiyscDuFX4AAqNVLGajmZFQVAXNAy1u-cdGefrg"; 
+const FOLDER_NAME = "SISPARDI_FILES"; // Nama folder di Google Drive untuk menyimpan file arsip
+
+/* --- 1. CORE & ROUTING --- */
+
+function doGet(e) {
+  // Cek apakah ada parameter 'verify' di URL
+  if (e.parameter && e.parameter.verify) {
+    return handleVerification(e.parameter.verify);
+  }
+
+  return HtmlService.createHtmlOutputFromFile('index')
+    .setTitle('SIS PARDI - Sistem Arsip Digital')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1').setFaviconUrl('https://images.icon-icons.com/3179/PNG/512/file_archive_icon_193973.png');
+}
+
+/**
+ * HELPER: Koneksi ke Spreadsheet via ID
+ * Memastikan script selalu terhubung ke file database yang benar.
+ */
+function getSS() {
+  return SpreadsheetApp.openById(SHEET_ID);
+}
+
+function getSheet(name) {
+  return getSS().getSheetByName(name);
+}
+
+/**
+ * SETUP DATABASE & ISI SAMPEL DATA LENGKAP
+ * Jalankan fungsi ini 1x. Jika sheet kosong, akan diisi data dummy.
+ */
+function initializeSheets() {
+  const ss = getSS();
+  const ui = SpreadsheetApp.getUi();
+  const currentUser = Session.getActiveUser().getEmail();
+
+  // --- 1. DATA SAMPEL ---
+
+  // Sample Users (3 Users per Bidang)
+  const sampleUsers = [
+    ["admin", "admin123", "Admin", "Administrator Utama", "Semua Bidang", "", "TRUE"], // Admin otomatis terverifikasi
+    
+    // Bidang Sekretariat
+    ["sekre1", "pass123", "User", "Staf Sekre 1", "Sekretariat", "", ""],
+    ["sekre2", "pass123", "User", "Staf Sekre 2", "Sekretariat", "", ""],
+    ["sekre3", "pass123", "User", "Staf Sekre 3", "Sekretariat", "", ""],
+    
+    // Bidang Perpustakaan
+    ["perpus1", "pass123", "User", "Staf Perpus 1", "Perpustakaan", "", ""],
+    ["perpus2", "pass123", "User", "Staf Perpus 2", "Perpustakaan", "", ""],
+    ["perpus3", "pass123", "User", "Staf Perpus 3", "Perpustakaan", "", ""],
+    
+    // Bidang Kearsipan
+    ["arsip1", "pass123", "User", "Staf Arsip 1", "Kearsipan", "", ""],
+    ["arsip2", "pass123", "User", "Staf Arsip 2", "Kearsipan", "", ""],
+    ["arsip3", "pass123", "User", "Staf Arsip 3", "Kearsipan", "", ""]
+  ];
+
+  // ... (rest of samples)
+
+  // --- 2. DEFINISI STRUKTUR ---
+  const schema = [
+    {
+      name: "Users",
+      headers: ["Username", "Password", "Role", "Nama", "Bidang", "Secret", "Verified"]
+    },
+    {
+      name: "Arsip",
+      headers: ["ID", "KodeKlasifikasi", "NoBerkas", "Uraian", "UraianArsip", "TingkatPerkembangan", "RetensiAktif", "RetensiInaktif", "Keamanan", "Status", "FileID", "FileUrl", "TglInput", "UserInput", "Keterangan", "TanggalArsip", "Jumlah", "Loc1", "Loc2", "Loc3", "Bidang"]
+    },
+    {
+      name: "Klasifikasi",
+      headers: ["ID", "Kode", "Deskripsi"]
+    }
+  ];
+
+  try {
+    schema.forEach(def => {
+      let sheet = ss.getSheetByName(def.name);
+      
+      // Buat sheet jika belum ada
+      if (!sheet) {
+        sheet = ss.insertSheet(def.name);
+      }
+
+      // Cek apakah sheet kosong (hanya header atau kosong total)
+      if (sheet.getLastRow() <= 1) {
+        sheet.clear(); // Bersihkan
+        sheet.appendRow(def.headers); // Buat Header
+        
+        // Format Header
+        const headerRange = sheet.getRange(1, 1, 1, def.headers.length);
+        headerRange.setFontWeight("bold").setBackground("#e2e8f0");
+        sheet.setFrozenRows(1);
+
+        // --- 3. INJECT DATA SAMPEL ---
+        
+        if (def.name === "Users") {
+          sampleUsers.forEach(u => sheet.appendRow(u));
+        }
+
+        if (def.name === "Klasifikasi") {
+          sampleKlasifikasi.forEach(k => {
+            sheet.appendRow([Utilities.getUuid(), k[0], k[1]]);
+          });
+        }
+
+        if (def.name === "Arsip") {
+          sampleArsip.forEach(a => {
+            sheet.appendRow([
+              Utilities.getUuid(), // ID
+              a[0], // Kode
+              a[1], // NoBerkas
+              a[2], // Uraian
+              "",   // UraianArsip
+              a[3], // Tingkat
+              a[4], // RA
+              a[5], // RI
+              a[6], // Keamanan
+              a[7], // Status
+              "",   // FileID
+              "",   // FileUrl
+              a[8], // TglInput
+              "System", // User
+              "Musnah", // Keterangan
+              a[8], // TanggalArsip
+              "1",  // Jumlah
+              "",   // Loc1
+              "",   // Loc2
+              "",   // Loc3
+              a[9]  // Bidang
+            ]);
+          });
+        }
+        
+        // Rapikan Kolom
+        sheet.autoResizeColumns(1, def.headers.length);
+      }
+    });
+
+    // Hapus Sheet1 jika ada dan kosong
+    const s1 = ss.getSheetByName("Sheet1");
+    if (s1 && s1.getLastRow() === 0) ss.deleteSheet(s1);
+
+    ui.alert("Sukses!", "Database telah di-reset dan diisi data sampel untuk semua sheet.", ui.ButtonSet.OK);
+
+  } catch (e) {
+    console.error(e);
+    ui.alert("Error", e.toString(), ui.ButtonSet.OK);
+  }
+}
+
+/* --- 2. AUTHENTICATION (LOGIN) --- */
+
+function createSession(username, role, bidang) {
+  const token = Utilities.getUuid(); // Buat kode unik acak
+  const sessionData = {
+    username: username,
+    role: role,
+    bidang: bidang,
+    expiry: new Date().getTime() + (24 * 60 * 60 * 1000) // Expire 24 jam
+  };
+  
+  // Simpan di Script Properties (Penyimpanan sementara server)
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty('SESSION_' + token, JSON.stringify(sessionData));
+  
+  return token;
+}
+
+/**
+ * Validasi Token (Dipanggil sebelum fungsi sensitif dijalankan)
+ */
+function validateToken(token, requiredRole) {
+  const props = PropertiesService.getScriptProperties();
+  const sessionJson = props.getProperty('SESSION_' + token);
+  
+  if (!sessionJson) {
+    throw new Error("Akses Ditolak: Sesi tidak valid atau kadaluarsa. Silakan login ulang.");
+  }
+  
+  const session = JSON.parse(sessionJson);
+  
+  // Cek Kadaluarsa
+  if (new Date().getTime() > session.expiry) {
+    props.deleteProperty('SESSION_' + token);
+    throw new Error("Sesi Berakhir: Silakan login ulang.");
+  }
+  
+  // Cek Role (Jika fungsi butuh level Admin)
+  if (requiredRole && session.role !== requiredRole) {
+    throw new Error("Akses Ditolak: Anda tidak memiliki izin Admin.");
+  }
+  
+  return session; // Kembalikan data user jika valid
+}
+
+/* --- 2.1 TOTP (GOOGLE AUTHENTICATOR) HELPERS --- */
+
+function generateBase32Secret() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let secret = '';
+  for (let i = 0; i < 16; i++) {
+    secret += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return secret;
+}
+
+function base32Decode(base32) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  let bits = '';
+  for (let i = 0; i < base32.length; i++) {
+    const val = chars.indexOf(base32.charAt(i).toUpperCase());
+    if (val === -1) continue;
+    bits += val.toString(2).padStart(5, '0');
+  }
+  const bytes = [];
+  for (let i = 0; i < bits.length - 7; i += 8) {
+    bytes.push(parseInt(bits.substr(i, 8), 2));
+  }
+  return bytes;
+}
+
+function verifyTOTP(secretBase32, token) {
+  try {
+    const key = base32Decode(secretBase32);
+    const epoch = Math.floor(Date.now() / 1000);
+    const currentWindow = Math.floor(epoch / 30);
+    
+    // Check current, previous, and next window (allow some time drift)
+    for (let w = -1; w <= 1; w++) {
+      const time = currentWindow + w;
+      const timeBytes = [0,0,0,0,0,0,0,0];
+      let tempTime = time;
+      for (let i = 7; i >= 0; i--) {
+        timeBytes[i] = tempTime & 0xff;
+        tempTime = Math.floor(tempTime / 256);
+      }
+      
+      const hmac = Utilities.computeHmacSignature(Utilities.MacAlgorithm.HMAC_SHA_1, timeBytes, key);
+      const offset = hmac[hmac.length - 1] & 0x0f;
+      const binary =
+        ((hmac[offset] & 0x7f) << 24) |
+        ((hmac[offset + 1] & 0xff) << 16) |
+        ((hmac[offset + 2] & 0xff) << 8) |
+        (hmac[offset + 3] & 0xff);
+        
+      const otp = (binary % 1000000).toString().padStart(6, '0');
+      if (otp === token.trim()) return true;
+    }
+  } catch(e) {}
+  return false;
+}
+
+function createTempSession(username, role, bidang, nama, rowIdx) {
+  const token = Utilities.getUuid();
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty('TEMP_2FA_' + token, JSON.stringify({
+    username: username, role: role, bidang: bidang, nama: nama, rowIdx: rowIdx, expiry: new Date().getTime() + (10 * 60 * 1000) // 10 minutes
+  }));
+  return token;
+}
+
+function loginUser(username, password) {
+  const sheet = getSheet('Users');
+  if (!sheet) return { success: false, message: "Database Users error." };
+  
+  const data = sheet.getDataRange().getValues();
+  
+  for (let i = 1; i < data.length; i++) {
+    const dbUser = String(data[i][0]).trim();
+    const dbPass = String(data[i][1]).trim();
+    
+    if (dbUser === username && dbPass === password) {
+      const role = data[i][2];
+      const nama = data[i][3];
+      const bidang = data[i][4] || "Semua Bidang";
+      
+      // Explicitly get columns and handle Boolean vs String
+      const rawSecret = sheet.getRange(i + 1, 6).getValue();
+      const rawVerified = sheet.getRange(i + 1, 7).getValue();
+      
+      const totpSecret = String(rawSecret || "").trim();
+      // Cek apakah rawVerified adalah Boolean true atau string "TRUE"/"true"
+      const isVerified = (rawVerified === true || String(rawVerified).toUpperCase() === "TRUE");
+      
+      let isSetup = false;
+      let qrUrl = "";
+      
+      if (!totpSecret || !isVerified) {
+        let currentSecret = totpSecret;
+        if (!totpSecret) {
+          currentSecret = generateBase32Secret();
+          sheet.getRange(i + 1, 6).setValue(currentSecret);
+        }
+        isSetup = true;
+        const appName = encodeURIComponent("SIS PARDI");
+        const userEncoded = encodeURIComponent(dbUser);
+        const uri = `otpauth://totp/${appName}:${userEncoded}?secret=${currentSecret}&issuer=${appName}`;
+        qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(uri)}`;
+      }
+      
+      const tempToken = createTempSession(dbUser, role, bidang, nama, i + 1);
+      
+      return {
+        success: true,
+        require2FA: true,
+        isSetup: isSetup,
+        qrUrl: qrUrl,
+        tempToken: tempToken
+      };
+    }
+  }
+  return { success: false, message: "Username atau password salah." };
+}
+
+function verify2FA(tempToken, code) {
+  const props = PropertiesService.getScriptProperties();
+  const tempJson = props.getProperty('TEMP_2FA_' + tempToken);
+  
+  if (!tempJson) return { success: false, message: "Sesi 2FA kadaluarsa atau tidak valid. Silakan login ulang." };
+  
+  const tempSession = JSON.parse(tempJson);
+  if (new Date().getTime() > tempSession.expiry) {
+    props.deleteProperty('TEMP_2FA_' + tempToken);
+    return { success: false, message: "Sesi 2FA kadaluarsa. Silakan login ulang." };
+  }
+  
+  const sheet = getSheet('Users');
+  const secret = sheet.getRange(tempSession.rowIdx, 6).getValue();
+  
+  if (verifyTOTP(String(secret).trim(), String(code).trim())) {
+    // Update status Verified jadi TRUE agar QR tidak muncul lagi nanti
+    sheet.getRange(tempSession.rowIdx, 7).setValue("TRUE");
+
+    // Code valid, create real session
+    props.deleteProperty('TEMP_2FA_' + tempToken);
+    const finalToken = createSession(tempSession.username, tempSession.role, tempSession.bidang);
+    
+    return {
+      success: true,
+      username: tempSession.username,
+      role: tempSession.role,
+      nama: tempSession.nama,
+      bidang: tempSession.bidang,
+      token: finalToken
+    };
+  }
+  
+  return { success: false, message: "Kode Authenticator salah." };
+}
+/* --- 3. DASHBOARD DATA --- */
+
+function getDashboardData(token) {
+  const session = validateToken(token, null); // Will throw error if invalid
+  const userBidang = session.bidang || "Semua Bidang";
+  
+  const sheetArsip = getSheet('Arsip');
+  const sheetKlas = getSheet('Klasifikasi');
+
+  if (!sheetArsip || !sheetKlas) return { totalArsip: 0, totalAktif: 0, totalInaktif: 0, totalKode: 0, listArsip: [], user: { nama: "Guest" } };
+
+  // --- HITUNG KODE KLASIFIKASI ---
+  let totalKode = 0;
+  const lastRowKlas = sheetKlas.getLastRow();
+  if (lastRowKlas > 1) {
+    const values = sheetKlas.getRange(2, 2, lastRowKlas - 1, 1).getValues();
+    totalKode = values.filter(r => r[0] && String(r[0]).trim() !== "").length;
+  }
+  
+  const archives = sheetArsip.getDataRange().getValues();
+  let totalAktif = 0;
+  let totalInaktif = 0;
+  let allData = [];
+
+  // Skip header
+  for (let i = 1; i < archives.length; i++) {
+    const r = archives[i];
+    if (!r[0]) continue; 
+
+    // --- FILTER BY BIDANG ---
+    const rowBidang = String(r[20] || '').trim(); // Index 20 = Bidang (Kolom U)
+    if (userBidang !== "Semua Bidang" && rowBidang !== userBidang && rowBidang !== "") {
+      continue; // Skip if it doesn't belong to this user's Bidang
+    }
+
+    // Index 9 = Status (Kolom J)
+    const status = String(r[9] || '').trim();
+    if (status === 'Aktif') totalAktif++;
+    if (status === 'Inaktif') totalInaktif++;
+
+    // Index 12 = TglInput (Kolom M) - Tetap diambil untuk sorting backup
+    const rawDate = r[12]; 
+    let safeDate = "";
+    try {
+      if (rawDate instanceof Date) safeDate = rawDate.toISOString();
+      else if (rawDate) safeDate = new Date(rawDate).toISOString();
+    } catch (e) {
+      safeDate = new Date().toISOString();
+    }
+
+    // --- PERBAIKAN: AMBIL TANGGAL ARSIP (KOLOM P / INDEX 15) ---
+    // Pastikan formatnya string YYYY-MM-DD agar mudah diolah di frontend
+    let tahunArsip = r[15];
+    if (tahunArsip instanceof Date) {
+        tahunArsip = Utilities.formatDate(tahunArsip, Session.getScriptTimeZone(), "yyyy-MM-dd");
+    } else {
+        tahunArsip = String(tahunArsip || "");
+    }
+
+    allData.push({
+      id: r[0],           
+      kode: r[1],         
+      noBerkas: r[2],     
+      uraian: r[3],       
+      uraianArsip: r[4],  
+      status: status,     
+      fileID: r[10],      
+      fileUrl: r[11],     
+      tglInput: safeDate, // Tetap kirim tanggal input sistem
+      tahun: tahunArsip,  // <--- PENTING: Tanggal Arsip dari User
+      loc1: r[17],        // <--- Baru
+      loc2: r[18],        // <--- Baru
+      loc3: r[19],        // <--- Baru
+      tipe: "Dokumen"
+    });
+  }
+  
+  // Sort data terbaru di atas (Berdasarkan Tgl Input Sistem agar yang baru diketik muncul duluan)
+  allData.sort((a, b) => {
+    return new Date(b.tglInput).getTime() - new Date(a.tglInput).getTime();
+  });
+
+  return {
+    totalArsip: totalAktif + totalInaktif,
+    totalAktif: totalAktif,
+    totalInaktif: totalInaktif,
+    totalKode: totalKode,
+    listArsip: allData,
+    user: { nama: session.username, role: session.role, bidang: session.bidang },
+    usersList: session.role === "Admin" ? getAllUsers() : [] // Kirim daftar user hanya jika Admin
+  };
+}
+
+/**
+ * Mendapatkan daftar user (Hanya untuk Admin)
+ */
+function getAllUsers() {
+  const sheet = getSheet('Users');
+  if (!sheet) return [];
+  const data = sheet.getDataRange().getValues();
+  let users = [];
+  for (let i = 1; i < data.length; i++) {
+    const rawVerified = data[i][6];
+    // Pengecekan cerdas: mendukung Boolean true, string "TRUE", atau "true"
+    const isVerified = (rawVerified === true || String(rawVerified).toUpperCase() === "TRUE");
+    
+    users.push({
+      username: data[i][0],
+      nama: data[i][3],
+      bidang: data[i][4],
+      isVerified: isVerified
+    });
+  }
+  return users;
+}
+
+/**
+ * Reset Secret Authenticator User (Hanya Admin)
+ */
+function resetUserSecret(targetUsername, token) {
+  validateToken(token, 'Admin'); // Validasi pengirim adalah Admin
+  
+  const sheet = getSheet('Users');
+  const data = sheet.getDataRange().getValues();
+  
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][0] === targetUsername) {
+      sheet.getRange(i + 1, 6).setValue(""); // Hapus Secret
+      sheet.getRange(i + 1, 7).setValue(""); // Hapus Status Verified
+      return { success: true, message: `Authenticator untuk user ${targetUsername} telah di-reset.` };
+    }
+  }
+  return { success: false, message: "User tidak ditemukan." };
+}
+
+// Tambahkan fungsi ini jika belum ada (untuk mengambil nama user login)
+function getActiveUser() {
+  // Logic sederhana mengambil user dari sheet Users berdasarkan Session Email
+  // Jika menggunakan login custom, sesuaikan dengan logic loginUser
+  return { nama: "Administrator Utama", role: "Admin" }; 
+}
+
+/* --- 4. CRUD ARSIP --- */
+
+
+/**
+ * Mengambil data arsip beserta "Indeks" (Deskripsi Klasifikasi)
+ * DIPERBARUI: Menangani format Tanggal Arsip (Kolom P)
+ */
+function getArsipWithIndex(type, token) {
+  const session = validateToken(token, null);
+  const userBidang = session.bidang || "Semua Bidang";
+
+  const sheetArsip = getSheet('Arsip');
+  const sheetKlas = getSheet('Klasifikasi');
+  
+  if (!sheetArsip || !sheetKlas) return [];
+
+  const dataArsip = sheetArsip.getDataRange().getValues();
+  const rows = dataArsip.slice(1); // Skip header
+  const dataKlas = sheetKlas.getDataRange().getValues();
+  
+  // 1. Buat Map: Kode -> Deskripsi
+  let klasMap = {};
+  for(let k=1; k<dataKlas.length; k++){
+    klasMap[String(dataKlas[k][1])] = dataKlas[k][2];
+  }
+
+  let result = [];
+  const timeZone = Session.getScriptTimeZone(); // Ambil zona waktu script
+
+  // 2. Loop Data Arsip
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    
+    // --- FILTER BY BIDANG ---
+    const rowBidang = String(row[20] || '').trim(); // Index 20 = Bidang (Kolom U)
+    if (userBidang !== "Semua Bidang" && rowBidang !== userBidang && rowBidang !== "") {
+      continue; // Skip if it doesn't belong to this user's Bidang
+    }
+
+    // Ambil Status dari Kolom J (Index 9)
+    const status = String(row[9] || '').trim();
+
+    // Filter berdasarkan Status (Aktif/Inaktif)
+    if (status === type) {
+      
+      // Handle Tanggal Input (System) - Kolom M
+      let tglInput = null;
+      try {
+         const rawDate = row[12];
+         if (rawDate instanceof Date) tglInput = rawDate.toISOString();
+         else if (rawDate) tglInput = new Date(rawDate).toISOString();
+      } catch(e) {}
+
+      // --- PERBAIKAN UTAMA DI SINI ---
+      // Handle Tanggal Arsip (User) - Kolom P (Index 15)
+      let tglArsipFixed = "";
+      const rawTahun = row[15];
+
+      if (rawTahun instanceof Date) {
+          // Jika format di Excel adalah Date, ubah jadi string YYYY-MM-DD
+          tglArsipFixed = Utilities.formatDate(rawTahun, timeZone, "yyyy-MM-dd");
+      } else {
+          // Jika format text/angka, ambil string-nya saja
+          tglArsipFixed = String(rawTahun || "");
+      }
+      // -------------------------------
+
+      let obj = {
+        ID: row[0],                  
+        KodeKlasifikasi: row[1],     
+        NoBerkas: row[2],            
+        Uraian: row[3], 
+        UraianArsip: row[4],         
+        TingkatPerkembangan: row[5], 
+        RetensiAktif: row[6],        
+        RetensiInaktif: row[7],      
+        Keamanan: row[8],  
+        Status: row[9],              
+        FileID: row[10],             
+        FileUrl: row[11],            
+        TglInput: tglInput,       
+        UserInput: row[13],          
+        Ket: row[14],                
+        Tahun: tglArsipFixed,        // <--- Menggunakan variabel yang sudah diformat
+        Jumlah: row[16],             
+        Loc1: row[17],               // <--- Baru: Filling Cabinet / Box
+        Loc2: row[18],               // <--- Baru: Laci / Rak
+        Loc3: row[19],               // <--- Baru: Folder
+        Bidang: row[20],             // <--- Bidang
+        
+        // Tambahan Field Indeks
+        Indeks: klasMap[String(row[1])] || '-'
+      };
+      
+      result.push(obj);
+    }
+  }
+  
+  // Sortir dari yang terbaru berdasarkan TglInput
+  result.sort((a, b) => {
+    return new Date(b.TglInput).getTime() - new Date(a.TglInput).getTime();
+  });
+
+  return result;
+}
+
+/**
+ * Backup Database - Mengambil seluruh data arsip tanpa filter Bidang (Hanya Admin)
+ */
+function backupDatabase(token) {
+  const session = validateToken(token, 'Admin'); // Harus Admin
+  
+  const sheetArsip = getSheet('Arsip');
+  const sheetKlas = getSheet('Klasifikasi');
+  if (!sheetArsip || !sheetKlas) return [];
+
+  const dataArsip = sheetArsip.getDataRange().getValues();
+  const rows = dataArsip.slice(1);
+  const dataKlas = sheetKlas.getDataRange().getValues();
+  
+  let klasMap = {};
+  for(let k=1; k<dataKlas.length; k++){
+    klasMap[String(dataKlas[k][1])] = dataKlas[k][2];
+  }
+
+  let result = [];
+  const timeZone = Session.getScriptTimeZone();
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    let tglArsipFixed = "";
+    const rawTahun = row[15];
+
+    if (rawTahun instanceof Date) {
+        tglArsipFixed = Utilities.formatDate(rawTahun, timeZone, "yyyy-MM-dd");
+    } else {
+        tglArsipFixed = String(rawTahun || "");
+    }
+
+    result.push({
+      ID: row[0], KodeKlasifikasi: row[1], NoBerkas: row[2],
+      Uraian: row[3], UraianArsip: row[4], TingkatPerkembangan: row[5],
+      RetensiAktif: row[6], RetensiInaktif: row[7], Keamanan: row[8],
+      Status: row[9], FileUrl: row[11], UserInput: row[13], Ket: row[14],
+      Tahun: tglArsipFixed, Jumlah: row[16], Loc1: row[17], Loc2: row[18], Loc3: row[19],
+      Bidang: row[20], Indeks: klasMap[String(row[1])] || '-'
+    });
+  }
+  return result;
+}
+
+/**
+ * Menyimpan Arsip Baru atau Update Arsip Lama
+ */
+function saveArsip(formObj) {
+  try {
+    // [SECURITY CHECK] Validasi Token Sesi
+    // Pastikan user memiliki token yang valid sebelum diizinkan menyimpan
+    let session = null;
+    if (formObj.token) {
+        // null = Role apa saja boleh (User/Admin) asal login
+        session = validateToken(formObj.token, null); 
+    } else {
+        return { success: false, message: "Akses ditolak: Token tidak ditemukan. Silakan login ulang." };
+    }
+
+    const sheet = getSheet('Arsip');
+    const isEdit = formObj.idArsip !== ""; // Cek apakah ini edit atau baru
+    let fileInfo = { id: "", url: "" };
+
+    // 1. Handle File Upload
+    if (formObj.fileData && formObj.fileName) {
+      // A. Upload File Baru ke Drive
+      fileInfo = uploadToDrive(formObj.fileData, formObj.fileName, formObj.mimeType);
+
+      // B. Hapus File Lama Jika Ada (Hanya saat Edit)
+      if (isEdit && formObj.oldFileId) {
+        try {
+            DriveApp.getFileById(formObj.oldFileId).setTrashed(true);
+        } catch(e) {
+            console.log("Gagal menghapus file lama: " + e.toString());
+        }
+      }
+    } else if (isEdit) {
+       // C. Jika User TIDAK upload file baru saat Edit, gunakan data file lama
+       fileInfo.id = formObj.oldFileId;
+       fileInfo.url = formObj.oldFileUrl;
+    }
+
+    // Default Values
+    const statusFinal = formObj.status || 'Aktif';
+
+    // Formatting String (Menjaga agar angka 0 di depan tidak hilang)
+    let kodeFixed = String(formObj.kodeKlasifikasi).startsWith("'") ? String(formObj.kodeKlasifikasi) : "'" + formObj.kodeKlasifikasi;
+    let noBerkasFixed = String(formObj.noBerkas).startsWith("'") ? String(formObj.noBerkas) : "'" + formObj.noBerkas;
+    let jumlahFixed = String(formObj.jumlah || '1').startsWith("'") ? String(formObj.jumlah) : "'" + (formObj.jumlah || '1');
+
+    // Susunan Data untuk Disimpan ke Sheet
+    const rowData = [
+      isEdit ? formObj.idArsip : Utilities.getUuid(), // A: ID
+      kodeFixed,                                      // B: Kode Klasifikasi
+      noBerkasFixed,                                  // C: No Berkas
+      formObj.uraian,                                 // D: Uraian Berkas
+      formObj.uraianArsip,                            // E: Uraian Arsip (Rincian)
+      formObj.tingkatPerkembangan,                    // F: Tingkat Perkembangan
+      formObj.retensiAktif,                           // G: Retensi Aktif
+      formObj.retensiInaktif,                         // H: Retensi Inaktif
+      formObj.keamanan,                               // I: Keamanan
+      statusFinal,                                    // J: Status
+      fileInfo.id,                                    // K: File ID
+      fileInfo.url,                                   // L: File URL
+      formObj.tglInput || new Date(),                 // M: Tgl Input System
+      session.username,                               // N: User Input
+      formObj.keterangan,                             // O: Keterangan (Nasib Akhir)
+      formObj.tahun,                                  // P: Tanggal Arsip (Input User YYYY-MM-DD)
+      jumlahFixed,                                    // Q: Jumlah
+      formObj.loc1 || "",                             // R: Loc1
+      formObj.loc2 || "",                             // S: Loc2
+      formObj.loc3 || "",                             // T: Loc3
+      session.bidang || "Semua Bidang"                // U: Bidang
+    ];
+    if (isEdit) {
+      // Mode Edit: Cari baris berdasarkan ID dan Update
+      const data = sheet.getDataRange().getValues();
+      for (let i = 1; i < data.length; i++) {
+        if (String(data[i][0]) === formObj.idArsip) {
+          
+          const range = sheet.getRange(i + 1, 1, 1, rowData.length);
+          range.setValues([rowData]);
+          
+          // Formatting
+          range.setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP);
+          range.setVerticalAlignment("top");
+          
+          return { success: true, message: "Data arsip diperbarui & file lama diganti!" };
+        }
+      }
+    } else {
+      // Mode Simpan Baru
+      sheet.appendRow(rowData);
+      
+      const lastRow = sheet.getLastRow();
+      const range = sheet.getRange(lastRow, 1, 1, rowData.length);
+      range.setWrapStrategy(SpreadsheetApp.WrapStrategy.WRAP);
+      range.setVerticalAlignment("top");
+      
+      return { success: true, message: "Arsip berhasil disimpan!" };
+    }
+  } catch (e) {
+    return { success: false, message: "Error: " + e.toString() };
+  }
+}
+
+function deleteArsip(id, fileId, token) {
+  try {
+    // 1. CEK KEAMANAN DULU
+    validateToken(token, 'Admin'); 
+    
+    // 2. Jika lolos, baru jalankan logika hapus
+    const sheet = getSheet('Arsip');
+    const data = sheet.getDataRange().getValues();
+
+    for (let i = 1; i < data.length; i++) {
+      if (String(data[i][0]) === id) {
+        sheet.deleteRow(i + 1);
+        if (fileId) { 
+            try { DriveApp.getFileById(fileId).setTrashed(true); } catch(e){} 
+        }
+        return { success: true, message: "Arsip berhasil dihapus." };
+      }
+    }
+    return { success: false, message: "Data tidak ditemukan." };
+    
+  } catch (e) {
+    return { success: false, message: e.message }; // Error akan dikirim ke SweetAlert
+  }
+}
+
+
+function getKlasifikasi() {
+  const sheet = getSheet('Klasifikasi'); // Pastikan nama sheet sesuai
+  if(!sheet) return [];
+  
+  // Ambil semua data (A sampai G)
+  // Asumsi urutan kolom sesuai gambar Anda:
+  // A=ID, B=Kode, C=Deskripsi, D=RetensiAktif, E=RetensiInaktif, F=Keterangan, G=Keamanan
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return []; // Jika hanya header
+
+  const data = sheet.getRange(2, 1, lastRow - 1, 7).getValues(); 
+
+  // Map data ke object JSON agar mudah dibaca di frontend
+  return data.map(r => ({
+    id: r[0],
+    kode: String(r[1]),        // Kolom B
+    deskripsi: r[2],           // Kolom C
+    retensiAktif: r[3],        // Kolom D (Bisa teks "1 tahun" atau angka)
+    retensiInaktif: r[4],      // Kolom E
+    keterangan: r[5],          // Kolom F (Musnah/Permanen)
+    keamanan: r[6]             // Kolom G (Biasa/Rahasia)
+  }));
+}
+
+function saveKlasifikasi(obj) {
+  const sheet = getSheet('Klasifikasi');
+  if (obj.id) {
+     // Edit
+     const data = sheet.getDataRange().getValues();
+     for(let i=1; i<data.length; i++){
+       if(String(data[i][0]) === obj.id) {
+         sheet.getRange(i+1, 2, 1, 2).setValues([[obj.kode, obj.deskripsi]]);
+         break;
+       }
+     }
+  } else {
+    // Baru
+    sheet.appendRow([Utilities.getUuid(), obj.kode, obj.deskripsi]);
+  }
+  return { success: true };
+}
+
+function deleteKlasifikasi(id) {
+   const sheet = getSheet('Klasifikasi');
+   const data = sheet.getDataRange().getValues();
+   for(let i=1; i<data.length; i++){
+     if(String(data[i][0]) === id) {
+       sheet.deleteRow(i+1);
+       return { success: true };
+     }
+   }
+}
+
+/* --- 6. UTILITIES (UPLOAD FILE) --- */
+
+function uploadToDrive(data, name, mimeType) {
+  try {
+    const folders = DriveApp.getFoldersByName(FOLDER_NAME);
+    let folder;
+    if (folders.hasNext()) {
+      folder = folders.next();
+    } else {
+      folder = DriveApp.createFolder(FOLDER_NAME);
+    }
+    
+    // Decode Base64 string dari client menjadi Blob
+    const blob = Utilities.newBlob(Utilities.base64Decode(data), mimeType, name);
+    const file = folder.createFile(blob);
+    
+    // Set permission agar bisa diakses user aplikasi
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    
+    return { id: file.getId(), url: file.getUrl() };
+  } catch (e) {
+    throw new Error("Gagal upload ke Drive: " + e.toString());
+  }
+}
+
+/* --- TAMBAHAN UNTUK IMPORT EXCEL --- */
+
+/**
+ * Import banyak data klasifikasi sekaligus
+ * @param {Array} dataList - Array of object {kode, deskripsi}
+ */
+function importKlasifikasiBulk(dataList) {
+  const sheet = getSheet('Klasifikasi');
+  if (!sheet) return { success: false, message: "Sheet tidak ditemukan" };
+
+  // Siapkan data untuk batch insert
+  // Format Row: [ID (UUID), Kode, Deskripsi]
+  let rowsToAdd = [];
+  
+  dataList.forEach(item => {
+    rowsToAdd.push([
+      Utilities.getUuid(), // Generate ID unik
+      item.kode,           // Pastikan format string di excel
+      item.deskripsi
+    ]);
+  });
+
+  if (rowsToAdd.length > 0) {
+    // Tulis ke sheet sekaligus (Batch Operation) agar performa cepat
+    const lastRow = sheet.getLastRow();
+    sheet.getRange(lastRow + 1, 1, rowsToAdd.length, 3).setValues(rowsToAdd);
+  }
+
+  return { success: true, count: rowsToAdd.length };
+}
+
+/* --- 7. QR VERIFICATION FUNCTIONS --- */
+
+/**
+ * Mendapatkan URL Web App
+ */
+function getScriptUrl() {
+  return ScriptApp.getService().getUrl();
+}
+
+/**
+ * Mencari data arsip berdasarkan ID untuk verifikasi publik
+ */
+function getArsipById(verificationId) {
+  const ss = getSS();
+  const sheet = ss.getSheetByName('Arsip'); 
+  const data = sheet.getDataRange().getValues();
+  
+  // Loop mulai baris ke-2 (index 1) karena baris 1 adalah Header
+  for (let i = 1; i < data.length; i++) {
+    // Cek Kolom A (Index 0) apakah cocok dengan verificationId
+    if (String(data[i][0]) === String(verificationId)) { 
+      return {
+        id: data[i][0],
+        kode: data[i][1],
+        noBerkas: data[i][2],
+        uraian: data[i][3],
+        tingkat: data[i][5],
+        status: data[i][9],
+        fileUrl: data[i][11],
+        tanggal: data[i][15] instanceof Date ? Utilities.formatDate(data[i][15], 'Asia/Jakarta', 'dd MMMM yyyy') : data[i][15],
+        bidang: data[i][20],
+        loc1: data[i][17],
+        loc2: data[i][18],
+        loc3: data[i][19]
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Menangani Tampilan Verifikasi saat QR Code discan
+ */
+function handleVerification(verificationId) {
+  const data = getArsipById(verificationId); 
+  
+  let html = "";
+  
+  if (data) {
+    html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <script src="https://cdn.tailwindcss.com"></script>
+        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+        <title>Verifikasi Arsip - VALID</title>
+      </head>
+      <body class="bg-gray-100 min-h-screen flex items-center justify-center p-4 font-sans">
+        <div class="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full border-t-4 border-green-500 transform transition-all hover:scale-105 duration-300">
+          
+          <div class="text-center mb-8">
+            <div class="bg-green-100 w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-4 shadow-inner">
+               <i class="fas fa-shield-check text-5xl text-green-600"></i>
+            </div>
+            <h1 class="text-2xl font-extrabold text-gray-800 tracking-tight">ARSIP VALID</h1>
+            <p class="text-green-600 font-medium text-sm mt-2 bg-green-50 inline-block px-3 py-1 rounded-full border border-green-200">
+              <i class="fas fa-check-circle mr-1"></i> Terverifikasi Sistem SISPARDI
+            </p>
+          </div>
+
+          <div class="space-y-4 text-sm text-gray-600 bg-gray-50 p-6 rounded-xl border border-gray-100">
+            <div class="flex justify-between border-b border-gray-200 pb-2">
+                <span class="text-gray-500">No. Berkas</span> 
+                <span class="font-bold text-gray-800 text-right">${data.noBerkas}</span>
+            </div>
+            <div class="flex justify-between border-b border-gray-200 pb-2">
+                <span class="text-gray-500">Kode Klasifikasi</span> 
+                <span class="font-bold text-gray-800 text-right">${data.kode}</span>
+            </div>
+            <div class="flex justify-between border-b border-gray-200 pb-2">
+                <span class="text-gray-500">Tanggal Arsip</span> 
+                <span class="font-bold text-gray-800 text-right">${data.tanggal}</span>
+            </div>
+            <div class="flex flex-col border-b border-gray-200 pb-2">
+                <span class="text-gray-500 mb-1">Uraian</span> 
+                <span class="font-bold text-gray-800 italic">"${data.uraian}"</span>
+            </div>
+            <div class="flex justify-between pt-2">
+                <span class="text-gray-500">Bidang</span> 
+                <span class="font-bold text-blue-800 text-right">${data.bidang}</span>
+            </div>
+            
+            <!-- Lokasi Penyimpanan -->
+            <div class="mt-4 pt-4 border-t border-dashed border-gray-300">
+                <p class="text-[10px] font-bold text-gray-400 uppercase tracking-widest mb-2">Lokasi Fisik</p>
+                <div class="grid grid-cols-3 gap-2">
+                    <div class="bg-white p-2 rounded-lg border border-gray-200 text-center">
+                        <p class="text-[9px] text-gray-400 uppercase">Boks/F.Cab</p>
+                        <p class="font-bold text-gray-700">${data.loc1 || '-'}</p>
+                    </div>
+                    <div class="bg-white p-2 rounded-lg border border-gray-200 text-center">
+                        <p class="text-[9px] text-gray-400 uppercase">Rak/Laci</p>
+                        <p class="font-bold text-gray-700">${data.loc2 || '-'}</p>
+                    </div>
+                    <div class="bg-white p-2 rounded-lg border border-gray-200 text-center">
+                        <p class="text-[9px] text-gray-400 uppercase">Folder</p>
+                        <p class="font-bold text-gray-700">${data.loc3 || '-'}</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="flex justify-between pt-4 text-xs text-gray-400">
+                <span>ID Arsip</span> 
+                <span class="font-mono">${verificationId}</span>
+            </div>
+          </div>
+
+          <div class="mt-8 space-y-3">
+            ${data.fileUrl ? `
+            <a href="${data.fileUrl}" target="_blank" class="flex items-center justify-center w-full bg-gradient-to-r from-blue-600 to-blue-700 text-white text-center py-3.5 rounded-xl font-bold hover:from-blue-700 hover:to-blue-800 transition-all shadow-lg hover:shadow-blue-500/30">
+              <i class="fas fa-file-pdf mr-2"></i> Lihat Dokumen Digital
+            </a>
+            ` : '<p class="text-center text-gray-400 italic">Dokumen digital tidak tersedia</p>'}
+            <div class="text-center">
+                <p class="text-xs text-gray-400 mt-4">Dokumen ini adalah bagian dari Sistem Informasi Arsip Dinamis.</p>
+            </div>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+  } else {
+    html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <script src="https://cdn.tailwindcss.com"></script>
+        <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+        <title>Verifikasi Gagal</title>
+      </head>
+      <body class="bg-gray-100 min-h-screen flex items-center justify-center p-4 font-sans">
+        <div class="bg-white p-8 rounded-2xl shadow-xl max-w-md w-full border-t-4 border-red-500">
+          
+          <div class="text-center mb-6">
+            <div class="bg-red-100 w-24 h-24 rounded-full flex items-center justify-center mx-auto mb-4 animate-pulse">
+               <i class="fas fa-times-circle text-5xl text-red-600"></i>
+            </div>
+            <h1 class="text-2xl font-extrabold text-gray-800">DATA TIDAK DITEMUKAN</h1>
+            <p class="text-red-500 font-semibold mt-2">
+              Verifikasi Gagal
+            </p>
+          </div>
+
+          <div class="bg-red-50 border-l-4 border-red-500 p-4 rounded-r-lg mb-6">
+            <div class="flex">
+              <div class="flex-shrink-0">
+                <i class="fas fa-exclamation-triangle text-red-500"></i>
+              </div>
+              <div class="ml-3">
+                <p class="text-sm text-red-700">
+                  Sistem tidak dapat menemukan data arsip dengan ID tersebut.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-8">
+             <div class="text-xs text-center text-gray-400">
+                ID yang dicari: <span class="font-mono bg-gray-100 px-1 rounded">${verificationId}</span>
+             </div>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+  }
+  
+  return HtmlService.createHtmlOutput(html)
+    .addMetaTag("viewport", "width=device-width, initial-scale=1.0")
+    .setTitle(data ? "Arsip Terverifikasi" : "Verifikasi Gagal")
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
